@@ -156,7 +156,7 @@ namespace SnapshotDiff
                 SendNotificationEmail(new byte[0]);
                 return 0;
             }
-            Console.WriteLine("Setting up web browser. Press Ctrl-C to terminate");
+            Console.WriteLine("Setting up web browser. Press Ctrl-C to terminate.");
             Console.CancelKeyPress += Console_CancelKeyPress;
             ChromeOptions chromeOptions = new ChromeOptions();
             ChromeDriverService service = ChromeDriverService.CreateDefaultService(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location));
