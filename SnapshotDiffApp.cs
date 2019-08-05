@@ -16,11 +16,20 @@ using OpenQA.Selenium.Chrome;
 
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
+using SixLabors.ImageSharp.Processing;
+using SixLabors.Primitives;
 
 namespace SnapshotDiff
 {
     public class SnapshotDiffOptions
     {
+        private class ReadOnlyProp : Attribute { }
+
+        private PropertyInfo[] GetProps()
+        {
+            return GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.SetProperty).Where(p => p.GetCustomAttribute<ReadOnlyProp>() == null).ToArray();
+        }
+
         public SnapshotDiffOptions(string[] args)
         {
             if (args == null || args.Length == 0)
@@ -38,7 +47,7 @@ namespace SnapshotDiff
                 string key = arg.Substring(0, pos).Trim('-', '/');
                 string value = arg.Substring(++pos);
                 bool found = false;
-                foreach (PropertyInfo prop in GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                foreach (PropertyInfo prop in GetProps())
                 {
                     if (prop.Name.Equals(key, StringComparison.OrdinalIgnoreCase))
                     {
@@ -52,23 +61,54 @@ namespace SnapshotDiff
                     throw new ArgumentException("Unrecognized argument " + arg);
                 }
             }
+            if (EmailHost == "youremailserver")
+            {
+                throw new ArgumentException("Invalid email server " + EmailHost);
+            }
             FileName = Path.GetFileNameWithoutExtension(FileName) + "." + FileFormat.ToString();
+            string[] rectPieces = Rect.Split(',');
+            try
+            {
+                Rectangle srcRect = new Rectangle(int.Parse(rectPieces[0]), int.Parse(rectPieces[1]), int.Parse(rectPieces[2]), int.Parse(rectPieces[3]));
+                if (srcRect.X >= BrowserWidth)
+                {
+                    throw new ArgumentException("Rect is out of bounds from browser width");
+                }
+                if (srcRect.Y >= BrowserHeight)
+                {
+                    throw new ArgumentException("Rect is out of bounds from browser height");
+                }
+                if (srcRect.Width <= 0 || srcRect.X + srcRect.Width > BrowserWidth)
+                {
+                    srcRect.Width = BrowserWidth - srcRect.X;
+                }
+                if (srcRect.Height <= 0 || srcRect.Y + srcRect.Height > BrowserHeight)
+                {
+                    srcRect.Height = BrowserHeight - srcRect.Y;
+                }
+                SourceRect = srcRect;
+            }
+            catch (Exception ex)
+            {
+                throw new ArgumentException("Invalid Rect: " + Rect + ", " + ex);
+            }
         }
 
         public void PrintUsage()
         {
             Console.Write("Usage: {0} ", Path.GetFileName(System.AppDomain.CurrentDomain.FriendlyName));
-            foreach (PropertyInfo prop in GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            foreach (PropertyInfo prop in GetProps())
             {
-                Console.Write("{0}={1}", prop.Name, prop.GetValue(this));
+                Console.Write("\"{0}={1}\" ", prop.Name, prop.GetValue(this));
             }
             Console.WriteLine();
         }
 
         public string Url { get; private set; } = "https://www.digitalruby.com";
-        public string FileName { get; private set; }
-        public int Width { get; private set; } = 1280;
-        public int Height { get; private set; } = 1024;
+        public string FileName { get; private set; } = "SnapshotDiff.png";
+        public int BrowserWidth { get; private set; } = 1280;
+        public int BrowserHeight { get; private set; } = 1024;
+        public string Rect { get; private set; } = "0,0,0,0";
         public int LoadDelayMilliseconds { get; private set; } = 1000;
         public int ForceDelayMilliseconds { get; private set; } = 0;
         public float Percent { get; private set; } = 0.1f;
@@ -76,14 +116,17 @@ namespace SnapshotDiff
         public ScreenshotImageFormat FileFormat { get; private set; } = ScreenshotImageFormat.Png;
 
         public bool EmailTestOnly { get; private set; }
-        public string EmailHost { get; private set; }
-        public int EmailPort { get; private set; }
-        public string EmailUserName { get; private set; }
-        public string EmailPassword { get; private set; }
-        public string EmailFromAddress { get; private set; }
+        public string EmailHost { get; private set; } = "youremailserver";
+        public int EmailPort { get; private set; } = 25;
+        public string EmailUserName { get; private set; } = "youremailusername";
+        public string EmailPassword { get; private set; } = "youremailpassword";
+        public string EmailFromAddress { get; private set; } = "youremailfromaddress";
         public string EmailFromName { get; private set; } = "SnapshotDiff";
-        public string EmailToAddress { get; private set; }
+        public string EmailToAddress { get; private set; } = "youremailtoaddress";
         public string EmailSubject { get; private set; } = "Url changed! {0}";
+
+        [ReadOnlyProp]
+        public Rectangle SourceRect { get; }
     }
 
     public class SnapshotDiffApp
@@ -113,7 +156,7 @@ namespace SnapshotDiff
                 SendNotificationEmail(new byte[0]);
                 return 0;
             }
-            Console.WriteLine("Press Ctrl-C to terminate");
+            Console.WriteLine("Setting up web browser. Press Ctrl-C to terminate");
             Console.CancelKeyPress += Console_CancelKeyPress;
             ChromeOptions chromeOptions = new ChromeOptions();
             ChromeDriverService service = ChromeDriverService.CreateDefaultService(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location));
@@ -124,7 +167,7 @@ namespace SnapshotDiff
             chromeOptions.AddArgument("hide-scrollbars");
             using (var driver = new ChromeDriver(service, chromeOptions))
             {
-                driver.Manage().Window.Size = new System.Drawing.Size(options.Width, options.Height);
+                driver.Manage().Window.Size = new System.Drawing.Size(options.BrowserWidth, options.BrowserHeight);
                 driver.Manage().Timeouts().ImplicitWait = TimeSpan.FromMilliseconds(options.LoadDelayMilliseconds);
                 while (!cancelToken.IsCancellationRequested)
                 {
@@ -140,7 +183,9 @@ namespace SnapshotDiff
                         if (File.Exists(options.FileName))
                         {
                             var imgCurrent = Image.Load<Rgba32>(options.FileName);
+                            imgCurrent.Mutate(i => i.Crop(options.SourceRect));
                             var imgNext = Image.Load<Rgba32>(rawBytes);
+                            imgNext.Mutate(i => i.Crop(options.SourceRect));
                             int pixelsDiff = 0;
                             if (imgCurrent.Width == imgNext.Width && imgCurrent.Height == imgNext.Height)
                             {
