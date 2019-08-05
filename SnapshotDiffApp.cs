@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 
 using MailKit;
@@ -88,8 +89,8 @@ namespace SnapshotDiff
     public class SnapshotDiffApp
     {
         private readonly SnapshotDiffOptions options;
-        private bool running = true;
-
+        private readonly CancellationTokenSource cancelToken = new CancellationTokenSource();
+        
         private void SendNotificationEmail(byte[] image)
         {
             SmtpClient client = new SmtpClient();
@@ -105,12 +106,7 @@ namespace SnapshotDiff
                 string.Format(options.EmailSubject, options.Url), builder.ToMessageBody()));
         }
 
-        public SnapshotDiffApp(SnapshotDiffOptions options)
-        {
-            this.options = options;
-        }
-
-        public int Run()
+        private int RunInternal()
         {
             if (options.EmailTestOnly)
             {
@@ -130,13 +126,13 @@ namespace SnapshotDiff
             {
                 driver.Manage().Window.Size = new System.Drawing.Size(options.Width, options.Height);
                 driver.Manage().Timeouts().ImplicitWait = TimeSpan.FromMilliseconds(options.LoadDelayMilliseconds);
-                while (running)
+                while (!cancelToken.IsCancellationRequested)
                 {
                     Console.Write("Pinging url {0}... ", options.Url);
                     try
                     {
                         driver.Navigate().GoToUrl(options.Url);
-                        Task.Delay(options.ForceDelayMilliseconds).Wait();
+                        Task.Delay(options.ForceDelayMilliseconds).Wait(cancelToken.Token);
                         var screenshot = driver.GetScreenshot();
                         string tempFile = Path.Combine(Path.GetTempPath(), "SnapshotDiffTemp.img");
                         byte[] rawBytes = screenshot.AsByteArray;
@@ -186,30 +182,51 @@ namespace SnapshotDiff
                         }
                         File.Delete(options.FileName);
                         File.Move(tempFile, options.FileName);
-                        Task.Delay(TimeSpan.FromSeconds(options.LoopDelaySeconds)).Wait();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
                     }
                     catch (Exception ex)
                     {
                         Console.WriteLine("Error: {0}", ex);
+                    }
+                    try
+                    {
+                        Task.Delay(TimeSpan.FromSeconds(options.LoopDelaySeconds)).Wait(cancelToken.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
                     }
                 }
             }
             return 0;
         }
 
-        private void Console_CancelKeyPress(object sender, ConsoleCancelEventArgs e)
+        public SnapshotDiffApp(SnapshotDiffOptions options)
         {
-            running = false;
+            this.options = options;
         }
 
-        public static int Main(string[] args)
+        public Task<int> Run()
+        {
+            return Task.Run(() => RunInternal());
+        }
+
+        private void Console_CancelKeyPress(object sender, ConsoleCancelEventArgs e)
+        {
+            cancelToken.Cancel();
+        }
+
+        public static async Task<int> Main(string[] args)
         {
             if (args.Length == 0 || args[0].Contains("help", StringComparison.OrdinalIgnoreCase))
             {
                 new SnapshotDiffOptions(null).PrintUsage();
                 return 1;
             }
-            return new SnapshotDiffApp(new SnapshotDiffOptions(args)).Run();
+            return await new SnapshotDiffApp(new SnapshotDiffOptions(args)).Run();
         }
     }
 }
