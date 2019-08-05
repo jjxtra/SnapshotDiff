@@ -156,13 +156,10 @@ namespace SnapshotDiff
                                 }
                             }
                             float percentDiff = (float)pixelsDiff / ((float)imgNext.Width * (float)imgNext.Height);
-                            if (percentDiff < options.Percent)
+                            Console.WriteLine("{0:0.00} percent different.", percentDiff * 100.0f);
+                            if (percentDiff >= options.Percent)
                             {
-                                Console.WriteLine("No change.");
-                            }
-                            else
-                            {
-                                Console.WriteLine("Url changed!");
+                                Console.WriteLine("Url percent difference threshold exceeded!");
                                 Task.Run(() =>
                                 {
                                     try
