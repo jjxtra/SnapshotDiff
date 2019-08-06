@@ -14,6 +14,8 @@ Height - chrome browser height
 LoadDelayMilliseconds - time to wait for page load complete event  
 ForceDelayMilliseconds - force sleep this amount of time after page load event  
 Percent - the percent the pixels must change to notify  
+LoopDelaySeconds - how often to loop and try the url again  
+FileFormat - file format to save latest url to, can be png, jpeg, gif, tiff, bmp  
 EmailTestOnly - whether to just send a test email  
 EmailHost - email server address  
 EmailPort - email server port  
