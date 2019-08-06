@@ -23,11 +23,9 @@ namespace SnapshotDiff
 {
     public class SnapshotDiffOptions
     {
-        private class ReadOnlyProp : Attribute { }
-
         private PropertyInfo[] GetProps()
         {
-            return GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.SetProperty).Where(p => p.GetCustomAttribute<ReadOnlyProp>() == null).ToArray();
+            return GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.SetProperty).Where(p => p.CanWrite).ToArray();
         }
 
         public SnapshotDiffOptions(string[] args)
@@ -65,6 +63,8 @@ namespace SnapshotDiff
             {
                 throw new ArgumentException("Invalid email server " + EmailHost);
             }
+            EmailFromAddresses = new MailboxAddress[] { new MailboxAddress(EmailFromName, EmailFromAddress) };
+            EmailToAddresses = EmailToAddress.Split(',').Select(e => new MailboxAddress(e)).ToArray();
             FileName = Path.GetFileNameWithoutExtension(FileName) + "." + FileFormat.ToString();
             string[] rectPieces = Rect.Split(',');
             try
@@ -104,6 +104,7 @@ namespace SnapshotDiff
             Console.WriteLine();
         }
 
+        // url/image properties
         public string Url { get; private set; } = "https://www.digitalruby.com";
         public string FileName { get; private set; } = "SnapshotDiff.png";
         public int BrowserWidth { get; private set; } = 1280;
@@ -115,6 +116,7 @@ namespace SnapshotDiff
         public int LoopDelaySeconds { get; private set; } = 300;
         public ScreenshotImageFormat FileFormat { get; private set; } = ScreenshotImageFormat.Png;
 
+        // notification properties
         public bool EmailTestOnly { get; private set; }
         public string EmailHost { get; private set; } = "youremailserver";
         public int EmailPort { get; private set; } = 25;
@@ -122,11 +124,13 @@ namespace SnapshotDiff
         public string EmailPassword { get; private set; } = "youremailpassword";
         public string EmailFromAddress { get; private set; } = "youremailfromaddress";
         public string EmailFromName { get; private set; } = "SnapshotDiff";
-        public string EmailToAddress { get; private set; } = "youremailtoaddress";
+        public string EmailToAddress { get; private set; } = "emailaddress1,emailaddress2";
         public string EmailSubject { get; private set; } = "Url changed! {0}";
 
-        [ReadOnlyProp]
+        // computed properties
         public Rectangle SourceRect { get; }
+        public MailboxAddress[] EmailFromAddresses { get; }
+        public MailboxAddress[] EmailToAddresses { get; }
     }
 
     public class SnapshotDiffApp
@@ -144,8 +148,7 @@ namespace SnapshotDiff
             builder.Attachments.Add(options.FileName, image, new ContentType("image", "png"));
             client.Connect(options.EmailHost, options.EmailPort, MailKit.Security.SecureSocketOptions.Auto);
             client.Authenticate(options.EmailUserName, options.EmailPassword);
-            client.Send(new MimeMessage(new MailboxAddress[] { new MailboxAddress(options.EmailFromName, options.EmailFromAddress) },
-                new MailboxAddress[] { new MailboxAddress(options.EmailToAddress) },
+            client.Send(new MimeMessage(options.EmailFromAddresses, options.EmailToAddresses,
                 string.Format(options.EmailSubject, options.Url), builder.ToMessageBody()));
         }
 
@@ -158,6 +161,8 @@ namespace SnapshotDiff
             }
             Console.WriteLine("Setting up web browser. Press Ctrl-C to terminate.");
             Console.CancelKeyPress += Console_CancelKeyPress;
+            string tempFile = Path.Combine(Path.GetTempPath(), "SnapshotDiffTemp.img");
+            float percentMultiplier = (1.0f / ((float)options.BrowserWidth * (float)options.BrowserHeight));
             ChromeOptions chromeOptions = new ChromeOptions();
             ChromeDriverService service = ChromeDriverService.CreateDefaultService(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location));
             service.SuppressInitialDiagnosticInformation = true;
@@ -177,7 +182,6 @@ namespace SnapshotDiff
                         driver.Navigate().GoToUrl(options.Url);
                         Task.Delay(options.ForceDelayMilliseconds).Wait(cancelToken.Token);
                         var screenshot = driver.GetScreenshot();
-                        string tempFile = Path.Combine(Path.GetTempPath(), "SnapshotDiffTemp.img");
                         byte[] rawBytes = screenshot.AsByteArray;
                         screenshot.SaveAsFile(tempFile, options.FileFormat);
                         if (File.Exists(options.FileName))
@@ -186,7 +190,7 @@ namespace SnapshotDiff
                             imgCurrent.Mutate(i => i.Crop(options.SourceRect));
                             var imgNext = Image.Load<Rgba32>(rawBytes);
                             imgNext.Mutate(i => i.Crop(options.SourceRect));
-                            int pixelsDiff = 0;
+                            int pixelDifferentCount = 0;
                             if (imgCurrent.Width == imgNext.Width && imgCurrent.Height == imgNext.Height)
                             {
                                 for (int y = 0; y < imgCurrent.Height; y++)
@@ -195,12 +199,12 @@ namespace SnapshotDiff
                                     {
                                         if (imgCurrent.Frames[0][x, y] != imgNext.Frames[0][x, y])
                                         {
-                                            pixelsDiff++;
+                                            pixelDifferentCount++;
                                         }
                                     }
                                 }
                             }
-                            float percentDiff = (float)pixelsDiff / ((float)imgNext.Width * (float)imgNext.Height);
+                            float percentDiff = (float)pixelDifferentCount * percentMultiplier;
                             Console.WriteLine("{0:0.00} percent different.", percentDiff * 100.0f);
                             if (percentDiff >= options.Percent)
                             {
@@ -222,7 +226,10 @@ namespace SnapshotDiff
                         {
                             Console.WriteLine("First ping, saved image.");
                         }
-                        File.Delete(options.FileName);
+                        if (File.Exists(options.FileName))
+                        {
+                            File.Delete(options.FileName);
+                        }
                         File.Move(tempFile, options.FileName);
                     }
                     catch (OperationCanceledException)
