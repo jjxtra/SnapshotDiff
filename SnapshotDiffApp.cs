@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -10,6 +11,9 @@ using MailKit;
 using MailKit.Net;
 using MailKit.Net.Smtp;
 using MimeKit;
+
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 using OpenQA.Selenium;
 using OpenQA.Selenium.Chrome;
@@ -28,35 +32,37 @@ namespace SnapshotDiff
             return GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.SetProperty).Where(p => p.CanWrite).ToArray();
         }
 
-        public SnapshotDiffOptions(string[] args)
+        public SnapshotDiffOptions(JToken args, int id)
         {
-            if (args == null || args.Length == 0)
+            if (args == null)
             {
                 return;
             }
-
-            foreach (string arg in args)
+            Id = id;
+            foreach (JProperty arg in args)
             {
-                int pos = arg.IndexOf('=');
-                if (pos < 0)
-                {
-                    throw new ArgumentException("Invalid argument " + arg);
-                }
-                string key = arg.Substring(0, pos).Trim('-', '/');
-                string value = arg.Substring(++pos);
+                string key = arg.Name.Trim();
+                string value = arg.Value.ToString().Trim();
                 bool found = false;
                 foreach (PropertyInfo prop in GetProps())
                 {
                     if (prop.Name.Equals(key, StringComparison.OrdinalIgnoreCase))
                     {
                         found = true;
-                        prop.SetValue(this, Convert.ChangeType(value, prop.PropertyType));
+                        if (prop.PropertyType.IsEnum)
+                        {
+                            prop.SetValue(this, Enum.Parse(prop.PropertyType, value, true));
+                        }
+                        else
+                        {
+                            prop.SetValue(this, Convert.ChangeType(value, prop.PropertyType, CultureInfo.InvariantCulture));
+                        }
                         break;
                     }
                 }
                 if (!found)
                 {
-                    throw new ArgumentException("Unrecognized argument " + arg);
+                    throw new ArgumentException("Unrecognized argument " + key);
                 }
             }
             if (EmailHost == "youremailserver")
@@ -96,12 +102,14 @@ namespace SnapshotDiff
 
         public void PrintUsage()
         {
-            Console.Write("Usage: {0} ", Path.GetFileName(System.AppDomain.CurrentDomain.FriendlyName));
-            foreach (PropertyInfo prop in GetProps())
+            Console.WriteLine("[{");
+            PropertyInfo[] props = GetProps();
+            for (int i = 0; i < props.Length; i++)
             {
-                Console.Write("\"{0}={1}\" ", prop.Name, prop.GetValue(this));
+                PropertyInfo prop = props[i];
+                Console.WriteLine("  \"{0}\": \"{1}\"{2}", prop.Name, prop.GetValue(this), (i < props.Length - 1 ? "," : string.Empty));
             }
-            Console.WriteLine();
+            Console.WriteLine("}]");
         }
 
         // url/image properties
@@ -131,13 +139,20 @@ namespace SnapshotDiff
         public Rectangle SourceRect { get; }
         public MailboxAddress[] EmailFromAddresses { get; }
         public MailboxAddress[] EmailToAddresses { get; }
+        public int Id { get; }
     }
 
-    public class SnapshotDiffApp
+    public class SnapshotDiffInstance : IDisposable
     {
+        private readonly ChromeDriverService service;
+        private readonly ChromeOptions serviceOptions;
         private readonly SnapshotDiffOptions options;
         private readonly CancellationTokenSource cancelToken = new CancellationTokenSource();
-        
+        private readonly string tempFile = Path.GetTempFileName();
+        private readonly string workingDir;
+
+        private ChromeDriver driver;
+
         private void SendNotificationEmail(byte[] image)
         {
             SmtpClient client = new SmtpClient();
@@ -152,41 +167,39 @@ namespace SnapshotDiff
                 string.Format(options.EmailSubject, options.Url), builder.ToMessageBody()));
         }
 
-        private int RunInternal()
+        private async Task<int> RunInternal()
         {
             if (options.EmailTestOnly)
             {
                 SendNotificationEmail(new byte[0]);
                 return 0;
             }
-            Console.WriteLine("Setting up web browser. Press Ctrl-C to terminate.");
             Console.CancelKeyPress += Console_CancelKeyPress;
-            string tempFile = Path.Combine(Path.GetTempPath(), "SnapshotDiffTemp.img");
             float percentMultiplier = (1.0f / ((float)options.BrowserWidth * (float)options.BrowserHeight));
-            ChromeOptions chromeOptions = new ChromeOptions();
-            ChromeDriverService service = ChromeDriverService.CreateDefaultService(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location));
-            service.SuppressInitialDiagnosticInformation = true;
-            service.HideCommandPromptWindow = true;
-            chromeOptions.AddArgument("headless");
-            chromeOptions.AddArgument("disable-gpu");
-            chromeOptions.AddArgument("hide-scrollbars");
-            using (var driver = new ChromeDriver(service, chromeOptions))
+            TimeSpan delaySeconds = TimeSpan.FromSeconds(options.LoopDelaySeconds);
+            string existingFile = Path.Combine(workingDir, options.FileName);
+            File.AppendAllLines(Path.Combine(workingDir, "info.txt"), new string[]
             {
+                "Url=" + options.Url
+            });
+            using (StreamWriter logFile = File.CreateText(Path.Combine(workingDir, "log.txt")))
+            {
+                driver = new ChromeDriver(service, serviceOptions);
                 driver.Manage().Window.Size = new System.Drawing.Size(options.BrowserWidth, options.BrowserHeight);
                 driver.Manage().Timeouts().ImplicitWait = TimeSpan.FromMilliseconds(options.LoadDelayMilliseconds);
                 while (!cancelToken.IsCancellationRequested)
                 {
-                    Console.Write("Pinging url {0}... ", options.Url);
+                    logFile.WriteLine("Pinging url {0}... ", options.Url);
                     try
                     {
                         driver.Navigate().GoToUrl(options.Url);
-                        Task.Delay(options.ForceDelayMilliseconds).Wait(cancelToken.Token);
+                        await Task.Delay(options.ForceDelayMilliseconds, cancelToken.Token);
                         var screenshot = driver.GetScreenshot();
                         byte[] rawBytes = screenshot.AsByteArray;
                         screenshot.SaveAsFile(tempFile, options.FileFormat);
-                        if (File.Exists(options.FileName))
+                        if (File.Exists(existingFile))
                         {
-                            var imgCurrent = Image.Load<Rgba32>(options.FileName);
+                            var imgCurrent = Image.Load<Rgba32>(existingFile);
                             imgCurrent.Mutate(i => i.Crop(options.SourceRect));
                             var imgNext = Image.Load<Rgba32>(rawBytes);
                             imgNext.Mutate(i => i.Crop(options.SourceRect));
@@ -205,10 +218,10 @@ namespace SnapshotDiff
                                 }
                             }
                             float percentDiff = (float)pixelDifferentCount * percentMultiplier;
-                            Console.WriteLine("{0:0.00} percent different.", percentDiff * 100.0f);
+                            logFile.WriteLine("{0:0.00} percent different.", percentDiff * 100.0f);
                             if (percentDiff >= options.Percent)
                             {
-                                Console.WriteLine("Url percent difference threshold exceeded!");
+                                logFile.WriteLine("Url percent difference threshold exceeded!");
                                 Task.Run(() =>
                                 {
                                     try
@@ -217,20 +230,23 @@ namespace SnapshotDiff
                                     }
                                     catch (Exception e)
                                     {
-                                        Console.WriteLine("Failed to send notification email: {0}", e);
+                                        logFile.WriteLine("Failed to send notification email: {0}", e);
                                     }
-                                });
+                                }).GetAwaiter();
                             }
                         }
                         else
                         {
-                            Console.WriteLine("First ping, saved image.");
+                            logFile.WriteLine("First ping, saved image.");
                         }
-                        if (File.Exists(options.FileName))
+                        if (File.Exists(existingFile))
                         {
-                            File.Delete(options.FileName);
+                            File.Delete(existingFile);
                         }
-                        File.Move(tempFile, options.FileName);
+                        if (File.Exists(tempFile))
+                        {
+                            File.Move(tempFile, existingFile);
+                        }
                     }
                     catch (OperationCanceledException)
                     {
@@ -238,11 +254,11 @@ namespace SnapshotDiff
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine("Error: {0}", ex);
+                        logFile.WriteLine("Error: {0}", ex);
                     }
                     try
                     {
-                        Task.Delay(TimeSpan.FromSeconds(options.LoopDelaySeconds)).Wait(cancelToken.Token);
+                        await Task.Delay(delaySeconds, cancelToken.Token);
                     }
                     catch (OperationCanceledException)
                     {
@@ -253,18 +269,37 @@ namespace SnapshotDiff
             return 0;
         }
 
-        public SnapshotDiffApp(SnapshotDiffOptions options)
+        public SnapshotDiffInstance(ChromeDriverService service, ChromeOptions serviceOptions, SnapshotDiffOptions options, string path)
         {
+            this.service = service;
+            this.serviceOptions = serviceOptions;
             this.options = options;
+            this.workingDir = path;
+            Directory.CreateDirectory(path);
         }
 
-        public Task<int> Run()
+        public void Dispose()
         {
-            return Task.Run(() => RunInternal());
+            if (File.Exists(tempFile))
+            {
+                File.Delete(tempFile);
+            }
+            driver?.Close();
+            driver?.Quit();
+            driver = null;
+        }
+
+        public async Task<int> Run()
+        {
+            using (this)
+            {
+                return await RunInternal();
+            }
         }
 
         private void Console_CancelKeyPress(object sender, ConsoleCancelEventArgs e)
         {
+            e.Cancel = true;
             cancelToken.Cancel();
         }
 
@@ -272,10 +307,49 @@ namespace SnapshotDiff
         {
             if (args.Length == 0 || args[0].Contains("help", StringComparison.OrdinalIgnoreCase))
             {
-                new SnapshotDiffOptions(null).PrintUsage();
+                Console.WriteLine("Pass the json file with your commands as the first argument. Optional path to work in as second argument.");
+                Console.WriteLine("The json file may contain:");
+                new SnapshotDiffOptions(null, 0).PrintUsage();
                 return 1;
             }
-            return await new SnapshotDiffApp(new SnapshotDiffOptions(args)).Run();
+
+            Console.WriteLine("Setting up web browser. Press Ctrl-C to terminate.");
+            ChromeOptions serviceOptions = new ChromeOptions();
+            ChromeDriverService service = ChromeDriverService.CreateDefaultService(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location));
+            service.SuppressInitialDiagnosticInformation = true;
+            service.HideCommandPromptWindow = true;
+            serviceOptions.AddArgument("headless");
+            serviceOptions.AddArgument("disable-gpu");
+            serviceOptions.AddArgument("hide-scrollbars");
+            try
+            {
+                List<Task> tasks = new List<Task>();
+                int id = 0;
+                using (StreamReader file = File.OpenText(args[0]))
+                using (JsonTextReader reader = new JsonTextReader(file))
+                {
+                    string path = (args.Length == 1 ? Directory.GetCurrentDirectory() : Path.GetFullPath(args[1]));
+                    while (reader.Read())
+                    {
+                        if (reader.TokenType == JsonToken.StartObject)
+                        {
+                            // Load each object from the stream and do something with it
+                            JObject obj = JObject.Load(reader);
+                            int nextId = ++id;
+                            Console.WriteLine("Starting url listener for {0}...", obj["Url"]);
+                            string subPath = Path.Combine(path, nextId.ToString());
+                            SnapshotDiffInstance inst = new SnapshotDiffInstance(service, serviceOptions, new SnapshotDiffOptions(obj, nextId), subPath);
+                            tasks.Add(Task.Run(() => inst.Run()));
+                        }
+                    }
+                }
+                await Task.WhenAll(tasks);
+            }
+            finally
+            {
+                service.Dispose();
+            }
+            return 0;
         }
     }
 }

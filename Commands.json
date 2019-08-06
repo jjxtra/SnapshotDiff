@@ -1,0 +1,24 @@
+﻿[
+  {
+    "Url": "https://www.digitalruby.com",
+    "FileName": "SnapshotDiff",
+    "BrowserWidth": "1280",
+    "BrowserHeight": "1024",
+    "Rect": "0,0,0,0",
+    "LoadDelayMilliseconds": "1000",
+    "ForceDelayMilliseconds": "0",
+    "Percent": "0.11",
+    "LoopDelaySeconds": "300",
+    "FileFormat": "png",
+
+    "EmailTestOnly": "false",
+    "EmailHost": "youremailserver",
+    "EmailPort": "25",
+    "EmailUserName": "youremailusername",
+    "EmailPassword": "youremailpassword",
+    "EmailFromAddress": "youremailfromaddress",
+    "EmailFromName": "SnapshotDiff",
+    "EmailToAddress": "emailaddress1,emailaddress2",
+    "EmailSubject": "Url changed! {0}"
+  }
+]
