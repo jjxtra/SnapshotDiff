@@ -284,9 +284,15 @@ namespace SnapshotDiff
             {
                 File.Delete(tempFile);
             }
-            driver?.Close();
-            driver?.Quit();
-            driver = null;
+            try
+            {
+                driver?.Close();
+                driver?.Quit();
+                driver = null;
+            }
+            catch
+            {
+            }
         }
 
         public async Task<int> Run()
