@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -174,6 +175,14 @@ namespace SnapshotDiff
                 SendNotificationEmail(new byte[0]);
                 return 0;
             }
+
+            // shutdown orphaned chrome processes, this will kill your web browser in dev environment if using chrome
+            foreach (Process p in Process.GetProcessesByName("chrome").Union(Process.GetProcessesByName("chrome.exe"))
+                .Union(Process.GetProcessesByName("chromedriver")).Union(Process.GetProcessesByName("chromedriver.exe")))
+            {
+                p.Kill();
+            }
+
             Console.CancelKeyPress += Console_CancelKeyPress;
             float percentMultiplier = (1.0f / ((float)options.BrowserWidth * (float)options.BrowserHeight));
             TimeSpan delaySeconds = TimeSpan.FromSeconds(options.LoopDelaySeconds);
