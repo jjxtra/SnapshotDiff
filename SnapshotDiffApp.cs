@@ -194,7 +194,7 @@ namespace SnapshotDiff
             float percentMultiplier = (1.0f / ((float)options.BrowserWidth * (float)options.BrowserHeight));
             TimeSpan delaySeconds = TimeSpan.FromSeconds(options.LoopDelaySeconds);
             string existingFile = Path.Combine(workingDir, options.FileName);
-            File.AppendAllLines(Path.Combine(workingDir, "info.txt"), new string[]
+            File.WriteAllLines(Path.Combine(workingDir, "info.txt"), new string[]
             {
                 "Url=" + options.Url
             });
