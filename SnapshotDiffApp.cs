@@ -16,9 +16,6 @@ using MimeKit;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
-using OpenQA.Selenium;
-using OpenQA.Selenium.Chrome;
-
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
@@ -72,7 +69,6 @@ namespace SnapshotDiff
             }
             EmailFromAddresses = new MailboxAddress[] { new MailboxAddress(EmailFromName, EmailFromAddress) };
             EmailToAddresses = EmailToAddress.Split(',').Select(e => new MailboxAddress(e)).ToArray();
-            FileName = Path.GetFileNameWithoutExtension(FileName) + "." + FileFormat.ToString();
             string[] rectPieces = Rect.Split(',');
             try
             {
@@ -119,11 +115,9 @@ namespace SnapshotDiff
         public int BrowserWidth { get; private set; } = 1280;
         public int BrowserHeight { get; private set; } = 1024;
         public string Rect { get; private set; } = "0,0,0,0";
-        public int LoadDelayMilliseconds { get; private set; } = 1000;
-        public int ForceDelayMilliseconds { get; private set; } = 0;
+        public int TimeoutMilliseconds { get; private set; } = 60000;
         public float Percent { get; private set; } = 0.1f;
         public int LoopDelaySeconds { get; private set; } = 300;
-        public ScreenshotImageFormat FileFormat { get; private set; } = ScreenshotImageFormat.Png;
 
         // notification properties
         public bool EmailTestOnly { get; private set; }
@@ -145,14 +139,11 @@ namespace SnapshotDiff
 
     public class SnapshotDiffInstance : IDisposable
     {
-        private readonly ChromeDriverService service;
-        private readonly ChromeOptions serviceOptions;
         private readonly SnapshotDiffOptions options;
         private readonly CancellationTokenSource cancelToken = new CancellationTokenSource();
-        private readonly string tempFile = Path.GetTempFileName();
         private readonly string workingDir;
-
-        private ChromeDriver driver;
+        private readonly string processToRun;
+        private readonly string processArgs;
 
         private void SendNotificationEmail(byte[] image)
         {
@@ -168,6 +159,7 @@ namespace SnapshotDiff
                 string.Format(options.EmailSubject, options.Url), builder.ToMessageBody()));
         }
 
+        // google-chrome-stable --headless --disable-gpu --disable-features=NetworkService --virtual-time-budget=60000 --window-size=1280,1024 --hide-scrollbars --screenshot=screen1.png https://www.kimsufi.com/us/en/order/kimsufi.xml?reference=1804sk20
         private async Task<int> RunInternal()
         {
             if (options.EmailTestOnly)
@@ -176,44 +168,44 @@ namespace SnapshotDiff
                 return 0;
             }
 
-            try
-            {
-                // shutdown orphaned chrome processes, this will kill your web browser in dev environment if using chrome
-                foreach (Process p in Process.GetProcessesByName("chrome").Union(Process.GetProcessesByName("chrome.exe"))
-                    .Union(Process.GetProcessesByName("chromedriver")).Union(Process.GetProcessesByName("chromedriver.exe")))
-                {
-                    p.Kill();
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Failed to kill chrome processes: " + ex);
-            }
-
             Console.CancelKeyPress += Console_CancelKeyPress;
             float percentMultiplier = (1.0f / ((float)options.BrowserWidth * (float)options.BrowserHeight));
             TimeSpan delaySeconds = TimeSpan.FromSeconds(options.LoopDelaySeconds);
             string existingFile = Path.Combine(workingDir, options.FileName);
-            File.WriteAllLines(Path.Combine(workingDir, "info.txt"), new string[]
+            string tempFile = existingFile + ".tmp";
+            await File.WriteAllLinesAsync(Path.Combine(workingDir, "info.txt"), new string[]
             {
                 "Url=" + options.Url
             });
             using (StreamWriter logFile = File.CreateText(Path.Combine(workingDir, "log.txt")))
             {
-                driver = new ChromeDriver(service, serviceOptions);
-                driver.Manage().Window.Size = new System.Drawing.Size(options.BrowserWidth, options.BrowserHeight);
-                driver.Manage().Timeouts().ImplicitWait = TimeSpan.FromMilliseconds(options.LoadDelayMilliseconds);
                 while (!cancelToken.IsCancellationRequested)
                 {
                     logFile.WriteLine("Pinging url {0}... ", options.Url);
                     try
                     {
+                        if (File.Exists(tempFile))
+                        {
+                            File.Delete(tempFile);
+                        }
                         float percentDiff = 0.0f;
-                        driver.Navigate().GoToUrl(options.Url);
-                        await Task.Delay(options.ForceDelayMilliseconds, cancelToken.Token);
-                        var screenshot = driver.GetScreenshot();
-                        byte[] rawBytes = screenshot.AsByteArray;
-                        screenshot.SaveAsFile(tempFile, options.FileFormat);
+                        string processArgsFormatted = string.Format(processArgs, existingFile, options.Url, options.TimeoutMilliseconds, options.BrowserWidth, options.BrowserHeight);
+                        using (Process p = Process.Start(processToRun, processArgsFormatted))
+                        {
+                            p.WaitForExit(options.TimeoutMilliseconds);
+                            if (!p.HasExited)
+                            {
+                                await logFile.WriteLineAsync("Screenshot timed out");
+                                try
+                                {
+                                    p.Kill();
+                                }
+                                catch
+                                {
+                                }
+                            }
+                        }
+                        byte[] rawBytes = await File.ReadAllBytesAsync(tempFile);
                         if (File.Exists(existingFile))
                         {
                             var imgCurrent = Image.Load<Rgba32>(existingFile);
@@ -235,11 +227,11 @@ namespace SnapshotDiff
                                 }
                             }
                             percentDiff = (float)pixelDifferentCount * percentMultiplier;
-                            logFile.WriteLine("{0:0.00} percent different.", percentDiff * 100.0f);
+                            await logFile.WriteLineAsync(string.Format("{0:0.00} percent different.", percentDiff * 100.0f));
                             if (percentDiff >= options.Percent)
                             {
-                                logFile.WriteLine("Url percent difference threshold exceeded!");
-                                Task.Run(() =>
+                                await logFile.WriteLineAsync("Url percent difference threshold exceeded!");
+                                Task.Run(async () =>
                                 {
                                     try
                                     {
@@ -247,14 +239,14 @@ namespace SnapshotDiff
                                     }
                                     catch (Exception e)
                                     {
-                                        logFile.WriteLine("Failed to send notification email: {0}", e);
+                                        await logFile.WriteLineAsync("Failed to send notification email: " + e);
                                     }
                                 }).GetAwaiter();
                             }
                         }
                         else
                         {
-                            logFile.WriteLine("First ping, saved image.");
+                            await logFile.WriteLineAsync("First ping, saved image.");
                         }
                         if (percentDiff > 0.0f)
                         {
@@ -274,7 +266,7 @@ namespace SnapshotDiff
                     }
                     catch (Exception ex)
                     {
-                        logFile.WriteLine("Error: {0}", ex);
+                        await logFile.WriteLineAsync("Error: " + ex);
                     }
                     try
                     {
@@ -289,30 +281,17 @@ namespace SnapshotDiff
             return 0;
         }
 
-        public SnapshotDiffInstance(ChromeDriverService service, ChromeOptions serviceOptions, SnapshotDiffOptions options, string path)
+        public SnapshotDiffInstance(SnapshotDiffOptions options, string path, string processToRun, string processArgs)
         {
-            this.service = service;
-            this.serviceOptions = serviceOptions;
             this.options = options;
             this.workingDir = path;
+            this.processToRun = processToRun;
+            this.processArgs = processArgs;
             Directory.CreateDirectory(path);
         }
 
         public void Dispose()
         {
-            if (File.Exists(tempFile))
-            {
-                File.Delete(tempFile);
-            }
-            try
-            {
-                driver?.Close();
-                driver?.Quit();
-                driver = null;
-            }
-            catch
-            {
-            }
         }
 
         public async Task<int> Run()
@@ -338,43 +317,43 @@ namespace SnapshotDiff
                 new SnapshotDiffOptions(null, 0).PrintUsage();
                 return 1;
             }
-
             Console.WriteLine("Setting up web browser. Press Ctrl-C to terminate.");
-            ChromeOptions serviceOptions = new ChromeOptions();
-            ChromeDriverService service = ChromeDriverService.CreateDefaultService(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location));
-            service.SuppressInitialDiagnosticInformation = true;
-            service.HideCommandPromptWindow = true;
-            serviceOptions.AddArgument("headless");
-            serviceOptions.AddArgument("disable-gpu");
-            serviceOptions.AddArgument("hide-scrollbars");
-            try
+            List<Task> tasks = new List<Task>();
+            int id = 0;
+            using (StreamReader file = File.OpenText(args[0]))
+            using (JsonTextReader reader = new JsonTextReader(file))
             {
-                List<Task> tasks = new List<Task>();
-                int id = 0;
-                using (StreamReader file = File.OpenText(args[0]))
-                using (JsonTextReader reader = new JsonTextReader(file))
+                JToken token = await JToken.LoadAsync(reader);
+                string path = (args.Length == 1 ? Directory.GetCurrentDirectory() : Path.GetFullPath(args[1]));
+                JToken process = token["process"];
+                JToken commands = token["commands"];
+
+                string processToRun = process["processToRun"].ToString();
+                string processArgs = process["processArgs"].ToString();
+
+                string toKill = Path.GetFileNameWithoutExtension(processToRun);
+                foreach (Process p in Process.GetProcessesByName(toKill))
                 {
-                    string path = (args.Length == 1 ? Directory.GetCurrentDirectory() : Path.GetFullPath(args[1]));
-                    while (reader.Read())
+                    try
                     {
-                        if (reader.TokenType == JsonToken.StartObject)
-                        {
-                            // Load each object from the stream and do something with it
-                            JObject obj = JObject.Load(reader);
-                            int nextId = ++id;
-                            Console.WriteLine("Starting url listener for {0}...", obj["Url"]);
-                            string subPath = Path.Combine(path, nextId.ToString());
-                            SnapshotDiffInstance inst = new SnapshotDiffInstance(service, serviceOptions, new SnapshotDiffOptions(obj, nextId), subPath);
-                            tasks.Add(Task.Run(() => inst.Run()));
-                        }
+                        p.Kill();
+                    }
+                    catch
+                    {
                     }
                 }
-                await Task.WhenAll(tasks);
+
+                // Load each object from the stream and do something with it
+                foreach (JToken obj in commands)
+                {
+                    int nextId = ++id;
+                    Console.WriteLine("Starting url listener for {0}...", obj["Url"]);
+                    string subPath = Path.Combine(path, nextId.ToString());
+                    SnapshotDiffInstance inst = new SnapshotDiffInstance(new SnapshotDiffOptions(obj, nextId), subPath, processToRun, processArgs);
+                    tasks.Add(Task.Run(() => inst.Run()));
+                }
             }
-            finally
-            {
-                service.Dispose();
-            }
+            await Task.WhenAll(tasks);
             return 0;
         }
     }
