@@ -176,11 +176,18 @@ namespace SnapshotDiff
                 return 0;
             }
 
-            // shutdown orphaned chrome processes, this will kill your web browser in dev environment if using chrome
-            foreach (Process p in Process.GetProcessesByName("chrome").Union(Process.GetProcessesByName("chrome.exe"))
-                .Union(Process.GetProcessesByName("chromedriver")).Union(Process.GetProcessesByName("chromedriver.exe")))
+            try
             {
-                p.Kill();
+                // shutdown orphaned chrome processes, this will kill your web browser in dev environment if using chrome
+                foreach (Process p in Process.GetProcessesByName("chrome").Union(Process.GetProcessesByName("chrome.exe"))
+                    .Union(Process.GetProcessesByName("chromedriver")).Union(Process.GetProcessesByName("chromedriver.exe")))
+                {
+                    p.Kill();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Failed to kill chrome processes: " + ex);
             }
 
             Console.CancelKeyPress += Console_CancelKeyPress;
@@ -201,6 +208,7 @@ namespace SnapshotDiff
                     logFile.WriteLine("Pinging url {0}... ", options.Url);
                     try
                     {
+                        float percentDiff = 0.0f;
                         driver.Navigate().GoToUrl(options.Url);
                         await Task.Delay(options.ForceDelayMilliseconds, cancelToken.Token);
                         var screenshot = driver.GetScreenshot();
@@ -226,7 +234,7 @@ namespace SnapshotDiff
                                     }
                                 }
                             }
-                            float percentDiff = (float)pixelDifferentCount * percentMultiplier;
+                            percentDiff = (float)pixelDifferentCount * percentMultiplier;
                             logFile.WriteLine("{0:0.00} percent different.", percentDiff * 100.0f);
                             if (percentDiff >= options.Percent)
                             {
@@ -248,13 +256,16 @@ namespace SnapshotDiff
                         {
                             logFile.WriteLine("First ping, saved image.");
                         }
-                        if (File.Exists(existingFile))
+                        if (percentDiff > 0.0f)
                         {
-                            File.Delete(existingFile);
-                        }
-                        if (File.Exists(tempFile))
-                        {
-                            File.Move(tempFile, existingFile);
+                            if (File.Exists(existingFile))
+                            {
+                                File.Delete(existingFile);
+                            }
+                            if (File.Exists(tempFile))
+                            {
+                                File.Move(tempFile, existingFile);
+                            }
                         }
                     }
                     catch (OperationCanceledException)
