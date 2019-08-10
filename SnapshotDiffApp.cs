@@ -139,8 +139,10 @@ namespace SnapshotDiff
 
     public class SnapshotDiffInstance : IDisposable
     {
+        private static readonly CancellationTokenSource cancelToken = new CancellationTokenSource();
+        private static string toKill;
+
         private readonly SnapshotDiffOptions options;
-        private readonly CancellationTokenSource cancelToken = new CancellationTokenSource();
         private readonly string workingDir;
         private readonly string processToRun;
         private readonly string processArgs;
@@ -167,8 +169,6 @@ namespace SnapshotDiff
                 SendNotificationEmail(new byte[0]);
                 return 0;
             }
-
-            Console.CancelKeyPress += Console_CancelKeyPress;
             float percentMultiplier = (1.0f / ((float)options.BrowserWidth * (float)options.BrowserHeight));
             TimeSpan delaySeconds = TimeSpan.FromSeconds(options.LoopDelaySeconds);
             string existingFile = Path.Combine(workingDir, options.FileName);
@@ -302,10 +302,35 @@ namespace SnapshotDiff
             }
         }
 
-        private void Console_CancelKeyPress(object sender, ConsoleCancelEventArgs e)
+        private static void Console_CancelKeyPress(object sender, ConsoleCancelEventArgs e)
         {
             e.Cancel = true;
+            Terminate();
+        }
+
+        private static void AppDomainExit(object sender, EventArgs e)
+        {
+            Terminate();
+        }
+
+        private static void Terminate()
+        {
             cancelToken.Cancel();
+            KillRunningProcesses();
+        }
+
+        private static void KillRunningProcesses()
+        {
+            foreach (Process p in Process.GetProcessesByName(toKill))
+            {
+                try
+                {
+                    p.Kill();
+                }
+                catch
+                {
+                }
+            }
         }
 
         public static async Task<int> Main(string[] args)
@@ -317,6 +342,8 @@ namespace SnapshotDiff
                 new SnapshotDiffOptions(null, 0).PrintUsage();
                 return 1;
             }
+            Console.CancelKeyPress += Console_CancelKeyPress;
+            AppDomain.CurrentDomain.ProcessExit += AppDomainExit;
             Console.WriteLine("Setting up web browser. Press Ctrl-C to terminate.");
             List<Task> tasks = new List<Task>();
             int id = 0;
@@ -331,17 +358,8 @@ namespace SnapshotDiff
                 string processToRun = process["processToRun"].ToString();
                 string processArgs = process["processArgs"].ToString();
 
-                string toKill = Path.GetFileNameWithoutExtension(processToRun);
-                foreach (Process p in Process.GetProcessesByName(toKill))
-                {
-                    try
-                    {
-                        p.Kill();
-                    }
-                    catch
-                    {
-                    }
-                }
+                toKill = Path.GetFileNameWithoutExtension(processToRun);
+                KillRunningProcesses();
 
                 // Load each object from the stream and do something with it
                 foreach (JToken obj in commands)
