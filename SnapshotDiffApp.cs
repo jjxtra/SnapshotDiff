@@ -205,58 +205,61 @@ namespace SnapshotDiff
                                 }
                             }
                         }
-                        byte[] rawBytes = await File.ReadAllBytesAsync(tempFile);
-                        if (File.Exists(existingFile))
+                        if (File.Exists(tempFile))
                         {
-                            var imgCurrent = Image.Load<Rgba32>(existingFile);
-                            imgCurrent.Mutate(i => i.Crop(options.SourceRect));
-                            var imgNext = Image.Load<Rgba32>(rawBytes);
-                            imgNext.Mutate(i => i.Crop(options.SourceRect));
-                            int pixelDifferentCount = 0;
-                            if (imgCurrent.Width == imgNext.Width && imgCurrent.Height == imgNext.Height)
+                            byte[] rawBytes = await File.ReadAllBytesAsync(tempFile);
+                            if (File.Exists(existingFile))
                             {
-                                for (int y = 0; y < imgCurrent.Height; y++)
+                                var imgCurrent = Image.Load<Rgba32>(existingFile);
+                                imgCurrent.Mutate(i => i.Crop(options.SourceRect));
+                                var imgNext = Image.Load<Rgba32>(rawBytes);
+                                imgNext.Mutate(i => i.Crop(options.SourceRect));
+                                int pixelDifferentCount = 0;
+                                if (imgCurrent.Width == imgNext.Width && imgCurrent.Height == imgNext.Height)
                                 {
-                                    for (int x = 0; x < imgCurrent.Width; x++)
+                                    for (int y = 0; y < imgCurrent.Height; y++)
                                     {
-                                        if (imgCurrent.Frames[0][x, y] != imgNext.Frames[0][x, y])
+                                        for (int x = 0; x < imgCurrent.Width; x++)
                                         {
-                                            pixelDifferentCount++;
+                                            if (imgCurrent.Frames[0][x, y] != imgNext.Frames[0][x, y])
+                                            {
+                                                pixelDifferentCount++;
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            percentDiff = (float)pixelDifferentCount * percentMultiplier;
-                            await logFile.WriteLineAsync(string.Format("{0:0.00} percent different.", percentDiff * 100.0f));
-                            if (percentDiff >= options.Percent)
-                            {
-                                await logFile.WriteLineAsync("Url percent difference threshold exceeded!");
-                                Task.Run(async () =>
+                                percentDiff = (float)pixelDifferentCount * percentMultiplier;
+                                await logFile.WriteLineAsync(string.Format("{0:0.00} percent different.", percentDiff * 100.0f));
+                                if (percentDiff >= options.Percent)
                                 {
-                                    try
+                                    await logFile.WriteLineAsync("Url percent difference threshold exceeded!");
+                                    Task.Run(async () =>
                                     {
-                                        SendNotificationEmail(rawBytes);
-                                    }
-                                    catch (Exception e)
-                                    {
-                                        await logFile.WriteLineAsync("Failed to send notification email: " + e);
-                                    }
-                                }).GetAwaiter();
+                                        try
+                                        {
+                                            SendNotificationEmail(rawBytes);
+                                        }
+                                        catch (Exception e)
+                                        {
+                                            await logFile.WriteLineAsync("Failed to send notification email: " + e);
+                                        }
+                                    }).GetAwaiter();
+                                }
                             }
-                        }
-                        else
-                        {
-                            await logFile.WriteLineAsync("First ping, saved image.");
-                        }
-                        if (percentDiff > 0.0f)
-                        {
-                            if (File.Exists(existingFile))
+                            else
                             {
-                                File.Delete(existingFile);
+                                await logFile.WriteLineAsync("First ping, saved image.");
                             }
-                            if (File.Exists(tempFile))
+                            if (percentDiff > 0.0f)
                             {
-                                File.Move(tempFile, existingFile);
+                                if (File.Exists(existingFile))
+                                {
+                                    File.Delete(existingFile);
+                                }
+                                if (File.Exists(tempFile))
+                                {
+                                    File.Move(tempFile, existingFile);
+                                }
                             }
                         }
                     }
