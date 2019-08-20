@@ -14,7 +14,7 @@
       "BrowserWidth": "1280",
       "BrowserHeight": "1024",
       "Rect": "0,0,0,0",
-      "TimeoutMilliseconds": "10000",
+      "TimeoutMilliseconds": "30000",
       "ForceDelayMilliseconds": "0",
       "Percent": "0.11",
       "LoopDelaySeconds": "300",
